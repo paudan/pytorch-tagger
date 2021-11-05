@@ -9,7 +9,7 @@ import sys
 import argparse
 import pickle
 import torch
-from pytorch_tagger import BERT_BiLSTM_CRF
+from pytorch_tagger import BERT_LSTM_CRF, BERT_Attentive_CRF
 from pytorch_tagger.trainers import BertModelTrainer
 from pytorch_tagger.datasets import BertDataset
 from pytorch_tagger.utils import set_seed
@@ -21,6 +21,7 @@ CACHE_DIR = 'embeddings'
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument("--model-type", default='lstm', type=str, help="Model architecture", choices=['lstm', 'attention'])
     parser.add_argument("--train-file", default=None, type=str, help="Training data file (Python pickle format)")
     parser.add_argument("--eval-file", default=None, type=str, help="Validation data file (Python pickle format)")
     parser.add_argument("--test-file", default=None, type=str, help="Testing data file (Python pickle format)", required=False)
@@ -82,13 +83,18 @@ if __name__ == '__main__':
     train_data, _, _ = dst.transform(x_train, y_train, labels_map=labels_map, max_seq_length=args.max_seq_length)
     eval_data, eval_tokens, eval_labels = dst.transform(x_valid, y_valid, labels_map=labels_map, max_seq_length=args.max_seq_length)
     config = AutoConfig.from_pretrained(args.model_name, cache_dir=CACHE_DIR)
-    model = BERT_BiLSTM_CRF.from_pretrained(args.model_name,
-        cache_dir=CACHE_DIR,
-        config=config,
-        bidirectional=args.use_bilstm,
-        hidden_size=args.rnn_dim,
-        labels_map=labels_map
-    )
+    params = {
+        'config': config,
+        'bidirectional': args.use_bilstm,
+        'hidden_size': args.rnn_dim,
+        'labels_map': labels_map
+    }
+    if args.model_type == 'lstm':
+        model = BERT_LSTM_CRF(**params)
+    elif args.model_type == 'attention':
+        model = BERT_Attentive_CRF(**params)
+    else:
+        raise Exception("Model type is not valid")
     trainer = BertModelTrainer(config, model, tokenizer, labels_map, use_gpu=args.use_gpu)
     trainer.fit(train_data, (eval_tokens, eval_labels, eval_data),
         epochs=args.num_epochs,

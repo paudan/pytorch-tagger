@@ -77,6 +77,7 @@ class Base_BERT_CRF(BertPreTrainedModel, BaseRNNMixin):
             if labels_map is None:
                 raise ValueError('Labels map is not set')
         num_labels = len(labels_map)
+        self.hidden_size = hidden_size
         self.bert = AutoModel.from_config(config)
         self.input_dim = config.hidden_size
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
