@@ -1,0 +1,21 @@
+#!/bin/bash
+
+ONTONOTES_PATH="OntoNotes-5.0/conll-formatted-ontonotes-5.0/data"
+DATASET_PATH=ontonotes
+BERT_PATH=FinBERT-FinVocab-Uncased
+CACHE_PATH=embeddings
+OUTPUT_PATH=finbert-ner-tagger
+
+echo "
+from pytorch_tagger.utils import process_ontonotes_ner
+process_ontonotes_ner('$ONTONOTES_PATH', '$DATASET_PATH')
+" | python3 - c
+python3 train_bert_tagger.py --model-name=$BERT_PATH \
+  --train-file=$DATASET_PATH/data_train.pkl \
+  --eval-file=$DATASET_PATH/data_test.pkl \
+  --model-type=attention --use-bilstm \
+  --output-dir=$OUTPUT_PATH \
+  --num-epochs=3 \
+  --use-gpu \
+  --train-batch-size=8 \
+  --cache-dir=$CACHE_PATH

@@ -1,0 +1,23 @@
+#!/bin/bash
+
+CUDA_VISIBLE_DEVICES=0 python3 train_bert_model.py \
+  --train-file=data_train.pkl --eval-file=data_valid.pkl --test-file=data_test.pkl \
+  --model-name=roberta-base \
+  --output-dir=roberta-pos-tagger \
+  --model-type=attention --use-bilstm \
+  --cache-dir=embeddings \
+  --num-epochs=3 \
+  --train-batch-size=32 \
+  --use-gpu
+CUDA_VISIBLE_DEVICES=0 python3 train_bert_model.py \
+  --train-file=data_train.pkl --eval-file=data_valid.pkl --test-file=data_test.pkl \
+  --model-name=bert-base-uncased \
+  --output-dir=bert-pos-tagger \
+  --model-type=attention --use-bilstm \
+  --cache-dir=embeddings \
+  --num-epochs=3 \
+  --train-batch-size=32 \
+  --use-gpu
+
+
+  
