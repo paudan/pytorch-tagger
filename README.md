@@ -1,29 +1,31 @@
-# BERT-BiLSTM-CRF
-
-PyTorch implementation of BERT-BiLSTM-CRF taggers for POS and NER tasks. Currently, only POS tagger is implemented.
+PyTorch implementation of transformers (BERT, RoBERTa, etc.) and ELMO BiLSTM-CRF based taggers for NLP tagging tasks (like part-of-speech tagging or named entity recognition). 
+This framework is highly extensible, and new architectures are expected to be added and tested in the future
 
 ## Usage
 
-The tool can be used as from the command line by running `bilstm-crf-pos.py`; the options are given below.
+The tool can be used as from the command line by running `train_bert_tagger.py`; the options are given below.
 
-```
-usage: bilstm-crf-pos.py [-h] [--train-file TRAIN_FILE]
-                         [--eval-file EVAL_FILE] [--test-file TEST_FILE]
-                         [--model-name MODEL_NAME] [--output-dir OUTPUT_DIR]
-                         [--cache-dir CACHE_DIR]
-                         [--max-seq-length MAX_SEQ_LENGTH] [--do-train]
-                         [--do-test] [--use-gpu]
-                         [--train-batch-size TRAIN_BATCH_SIZE]
-                         [--eval-batch-size EVAL_BATCH_SIZE]
-                         [--learning-rate LEARNING_RATE]
-                         [--num-epochs NUM_EPOCHS] [--seed SEED]
-                         [--gradient-accumulation-steps GRADIENT_ACCUMULATION_STEPS]
-                         [--warmup-steps WARMUP_STEPS] [--max-steps MAX_STEPS]
-                         [--lower-case] [--logging-steps LOGGING_STEPS]
-                         [--use-bilstm] [--rnn-dim RNN_DIM]
+```shell
+usage: train_bert_tagger.py [-h] [--model-type {lstm,attention}]
+                            [--train-file TRAIN_FILE] [--eval-file EVAL_FILE]
+                            [--test-file TEST_FILE] [--model-name MODEL_NAME]
+                            [--output-dir OUTPUT_DIR] [--cache-dir CACHE_DIR]
+                            [--max-seq-length MAX_SEQ_LENGTH] [--do-train]
+                            [--do-test] [--use-gpu]
+                            [--train-batch-size TRAIN_BATCH_SIZE]
+                            [--eval-batch-size EVAL_BATCH_SIZE]
+                            [--learning-rate LEARNING_RATE]
+                            [--num-epochs NUM_EPOCHS] [--seed SEED]
+                            [--gradient-accumulation-steps GRADIENT_ACCUMULATION_STEPS]
+                            [--warmup-steps WARMUP_STEPS]
+                            [--max-steps MAX_STEPS] [--lower-case]
+                            [--logging-steps LOGGING_STEPS] [--use-bilstm]
+                            [--rnn-dim RNN_DIM]
 
 optional arguments:
   -h, --help            show this help message and exit
+  --model-type {lstm,attention}
+                        Model architecture
   --train-file TRAIN_FILE
                         Training data file (Python pickle format)
   --eval-file EVAL_FILE
@@ -65,8 +67,10 @@ optional arguments:
   --use-bilstm          Indicates if bidirectional LSTM will be used as the
                         intermediate layer
   --rnn-dim RNN_DIM     LSTM hidden layer dimension
-
 ```
+
+An command-line example is provided in `run-train-bert` script which can be adjusted as required. 
+Similarly, one may run `train_elmo_tagger.py` tool for training ELMO-based taggers; the only difference are the ELMO model options and weights files required for training
 
 At this moment, only Python `pickle` files are supported as input which contain sequences of tokens as lists, together with lists representing tags for each these tokens. 
 
