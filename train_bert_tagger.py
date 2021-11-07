@@ -9,6 +9,7 @@ import sys
 import argparse
 import pickle
 import torch
+from torch.utils.data import DataLoader
 from pytorch_tagger import BERT_LSTM_CRF, BERT_Attentive_CRF
 from pytorch_tagger.trainers import BertModelTrainer
 from pytorch_tagger.datasets import BertDataset
@@ -87,7 +88,8 @@ if __name__ == '__main__':
         'config': config,
         'bidirectional': args.use_bilstm,
         'hidden_size': args.rnn_dim,
-        'labels_map': labels_map
+        'labels_map': labels_map,
+        'tokenizer': tokenizer
     }
     if args.model_type == 'lstm':
         model = BERT_LSTM_CRF(**params)
@@ -96,14 +98,15 @@ if __name__ == '__main__':
     else:
         raise Exception("Model type is not valid")
     trainer = BertModelTrainer(config, model, tokenizer, labels_map, use_gpu=args.use_gpu)
-    trainer.fit(train_data, (eval_tokens, eval_labels, eval_data),
+    trainer.fit(train_data, eval_data,
         epochs=args.num_epochs,
         output_dir=args.output_dir,
         warmup_steps=args.warmup_steps,
-        logging_steps=args.logging_steps,
         learning_rate=args.learning_rate,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         max_steps=args.max_steps,
         train_batch_size=args.train_batch_size
     )
+    dataloader = DataLoader(eval_data, batch_size=32)
+    print(trainer.evaluate(dataloader, eval_tokens))
 

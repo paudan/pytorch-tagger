@@ -6,17 +6,19 @@ __email__ = "danpaulius@gmail.com"
 
 import os
 import shutil
-import itertools
 import json
 import logging
+import itertools
 from abc import abstractmethod
 from collections import namedtuple
 import torch
 from torch.optim import Adam
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard.writer import SummaryWriter
 from transformers.optimization import get_linear_schedule_with_warmup
-from tqdm import tqdm, trange
+from pytorch_lightning import Trainer, LightningModule
+from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
+from pytorch_lightning.callbacks import (EarlyStopping, ModelCheckpoint, DeviceStatsMonitor,
+                                         TQDMProgressBar, LearningRateMonitor)
 from sklearn.metrics import precision_score, recall_score, f1_score
 
 import warnings
@@ -26,26 +28,21 @@ module = __import__('transformers')
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.StreamHandler())
 logger.setLevel(logging.INFO)
+torch.cuda.empty_cache()
 
 
 class AbstractModelTrainer:
 
-    def __init__(self, model, labels_map, use_gpu=True):
+    def __init__(self, model: LightningModule, labels_map, use_gpu=True):
         self.model = model
         self.labels_map = labels_map
         device = 'cuda' if use_gpu is True and torch.cuda.is_available() else 'cpu'
-        self.device = torch.device(device)
-        self.model.to(self.device)
-        self.n_gpu = torch.cuda.device_count()
-        if self.device.type == 'cuda':
+        if device == 'cuda':
             logger.info(torch.cuda.get_device_name(0))
-            logger.info('Available device count: {}'.format(self.n_gpu))
+            logger.info('Available device count: {}'.format(torch.cuda.device_count()))
             logger.info('Memory Usage:')
             logger.info('Allocated: {} GB'.format(round(torch.cuda.memory_allocated(0)/1024**3,1)))
             logger.info('Cached: {} GB'.format(round(torch.cuda.memory_reserved(0)/1024**3,1)))
-            if self.n_gpu > 1:
-                self.model = torch.nn.DataParallel(self.model)
-        self.writer = SummaryWriter()
 
     def init_dir(self, output_dir):
         if os.path.exists(output_dir):
@@ -56,81 +53,46 @@ class AbstractModelTrainer:
     def save_model(self, output_dir):
         raise NotImplementedError()
 
-    @abstractmethod
-    def predict(self, dataloader, model):
-        raise NotImplementedError()
-
-    @abstractmethod
-    def fit_model(self, batch):
-        raise NotImplementedError()
-
-    def filter_predictions(self, all_tokens, all_true, all_pred):
-        return all_true, all_pred
-
-    def fit(self, train_data, eval_data, epochs=10, output_dir='bert_pos', warmup_steps=500, logging_steps=500,
-            learning_rate=3e-4, gradient_accumulation_steps=1, max_steps=-1, train_batch_size=32, early_stop=10):
-        eval_tokens, eval_labels, eval_data = eval_data
+    def fit(self, train_data, eval_data, epochs=10, output_dir='bert_pos', warmup_steps=500,
+            learning_rate=3e-4, gradient_accumulation_steps=1, max_steps=-1, train_batch_size=32):
         train_dataloader = DataLoader(train_data, batch_size=train_batch_size)
+        val_dataloader = DataLoader(eval_data, batch_size=1)
         self.init_dir(output_dir)
         optimizer = Adam(lr=learning_rate, params=self.model.parameters())
         scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=max_steps)
-        t_total = len(train_data) // gradient_accumulation_steps * epochs
+        trainer = Trainer(
+            logger=[CSVLogger(output_dir),TensorBoardLogger(output_dir)],
+            default_root_dir=output_dir,
+            gpus=torch.cuda.device_count(),
+            auto_lr_find=True,
+            accumulate_grad_batches=gradient_accumulation_steps,
+            max_epochs=epochs,
+            num_sanity_val_steps=0,
+            callbacks=[
+                EarlyStopping(monitor='valid_mean_loss', patience=10),
+                ModelCheckpoint(monitor='valid_mean_loss', dirpath=os.path.join(output_dir, 'checkpoints')),
+                DeviceStatsMonitor(),
+                TQDMProgressBar(),
+                LearningRateMonitor(logging_interval='epoch')
+            ]
+        )
+        trainer.optimizers.append(optimizer)
+        trainer.lr_schedulers.append(scheduler)
+        trainer.fit(self.model, train_dataloader, val_dataloader)
 
-        logger.info("***** Running training *****")
-        logger.info("  Num examples = %d", len(train_data))
-        logger.info("  Num Epochs = %d", epochs)
-        logger.info("  Total optimization steps = %d", t_total)
-        self.model.train()
-        global_step = 0
-        best_f1 = 0.0
-        with trange(epochs, desc="Epoch") as tr:
-            for ep in tr:
-                tr_loss, logging_loss = 0.0, 0.0
-                self.model.train()
-                for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
-                    outputs = self.fit_model(batch)
-                    loss = outputs
-                    if self.n_gpu > 1:
-                        loss = loss.mean() # mean() to average on multi-gpu.
-                    if gradient_accumulation_steps > 1:
-                        loss = loss / gradient_accumulation_steps
-                    loss.backward()
-                    tr_loss += loss.item()
-                    if (step + 1) % gradient_accumulation_steps == 0:
-                        optimizer.step()
-                        scheduler.step()  # Update learning rate schedule
-                        self.model.zero_grad()
-                        global_step += 1
-                        if logging_steps > 0 and global_step % logging_steps == 0:
-                            tr_loss_avg = (tr_loss-logging_loss)/logging_steps
-                            self.writer.add_scalar("Train/loss", tr_loss_avg, global_step)
-                            logging_loss = tr_loss
-                    tr.set_postfix(total_loss=tr_loss, mean_loss=tr_loss/(step+1))
-
-                # Evaluation
-                overall = self.evaluate(eval_data, self.model, eval_tokens, eval_labels)
-                f1_score = overall.fscore
-                self.writer.add_scalar("Eval/precision", overall.prec, ep)
-                self.writer.add_scalar("Eval/recall", overall.rec, ep)
-                self.writer.add_scalar("Eval/f1_score", overall.fscore, ep)
-                logger.debug(f"Eval/precision: {overall.prec}, eval/recall: {overall.rec}, eval/f1_score: {overall.fscore}\n")
-                if f1_score >= best_f1:
-                    logger.debug(f"----------the best f1 is {f1_score}---------")
-                    best_f1 = f1_score
-                    self.save_model(output_dir)
-        self.writer.close()
-
-    def evaluate(self, eval_data, model, orig_tokens, orig_labels):
-        model.eval()
-        pred_labels = self.predict(eval_data, model)
-        all_tokens = list(itertools.chain(*orig_tokens))
+    def evaluate(self, data, all_tokens):
+        input, orig_labels = tuple(data)
+        pred_labels = self.model.predict(input)
         all_true = list(itertools.chain(*orig_labels))
         all_pred = list(itertools.chain(*pred_labels))
-        all_true, all_pred = self.filter_predictions(all_tokens, all_true, all_pred)
-        Metrics = namedtuple('Metrics', ['prec', 'rec', 'fscore'])
-        return Metrics(prec=precision_score(all_true, all_pred, average='micro'),
-                       rec=recall_score(all_true, all_pred, average='micro'),
+        all_true, all_pred = self.filter_predictions(all_true, all_pred, all_tokens)
+        Metrics = namedtuple('Metrics', ['precision', 'recall', 'fscore'])
+        return Metrics(precision=precision_score(all_true, all_pred, average='micro'),
+                       recall=recall_score(all_true, all_pred, average='micro'),
                        fscore=f1_score(all_true, all_pred, average='micro'))
+
+    def filter_predictions(self, all_true, all_pred, all_tokens):
+        return all_true, all_pred
 
 
 class BertModelTrainer(AbstractModelTrainer):
@@ -143,7 +105,7 @@ class BertModelTrainer(AbstractModelTrainer):
     def save_model(self, output_dir):
         label2id = self.labels_map
         id2label = {value:key for key,value in label2id.items()}
-        model_to_save = self.model.module if hasattr(self.model, 'module') else self.model
+        model_to_save = self.model._model.module if hasattr(self.model._model, 'module') else self.model._model
         model_to_save.save_pretrained(output_dir)
         self.tokenizer.save_pretrained(output_dir)
         self.config.id2label = id2label
@@ -153,29 +115,7 @@ class BertModelTrainer(AbstractModelTrainer):
         with open(os.path.join(output_dir, 'params.json'), 'w', encoding='utf-8') as f:
             json.dump(params, f)
 
-    def fit_model(self, batch):
-        batch = tuple(t.to(self.device) for t in batch)
-        input_ids, input_mask, segment_ids, label_ids = batch
-        return self.model(input_ids, label_ids, segment_ids, input_mask)
-
-    def predict(self, eval_data, model):
-        label2id = self.labels_map
-        id2label = {value:key for key,value in label2id.items()}
-        pred_labels = []
-        for b_i, (input_ids, input_mask, segment_ids, _) in enumerate(tqdm(eval_data, desc="Evaluating")):
-            input_ids = input_ids.unsqueeze(0)
-            input_mask = input_mask.unsqueeze(0)
-            segment_ids = segment_ids.unsqueeze(0)
-            input_ids = input_ids.to(self.device)
-            input_mask = input_mask.to(self.device)
-            segment_ids = segment_ids.to(self.device)
-            with torch.no_grad():
-                logits = model.predict(input_ids, segment_ids, input_mask)
-            for l in logits:
-                pred_labels.append([id2label[idx] for idx in l])
-        return pred_labels
-
-    def filter_predictions(self, all_tokens, all_true, all_pred):
+    def filter_predictions(self, all_true, all_pred, all_tokens):
         # Exclude BERT specific tags
         skip_mask = list(map(lambda x: x not in [self.tokenizer.cls_token, self.tokenizer.sep_token], all_tokens))
         all_true = list(itertools.compress(all_true, skip_mask))
@@ -185,28 +125,8 @@ class BertModelTrainer(AbstractModelTrainer):
 
 class ElmoModelTrainer(AbstractModelTrainer):
 
-    def __init__(self, model, labels_map, use_gpu=True):
-        super(ElmoModelTrainer, self).__init__(model, labels_map, use_gpu)
-
     def save_model(self, output_dir):
         if not os.path.isdir(output_dir):
             os.mkdir(output_dir)
         torch.save(self.model, os.path.join(output_dir, 'model.pth'))
 
-    def fit_model(self, batch):
-        input_ids, label_ids = tuple(batch)
-        input_ids = input_ids.to(self.device)
-        label_ids = label_ids.to(self.device)
-        return self.model(input_ids, label_ids)
-
-    def predict(self, eval_data, model):
-        label2id = self.labels_map
-        id2label = {value:key for key,value in label2id.items()}
-        pred_labels = []
-        for b_i, input_ids in enumerate(tqdm(eval_data, desc="Evaluating")):
-            input_ids = input_ids.unsqueeze(0).to(self.device)
-            with torch.no_grad():
-                logits = model.predict(input_ids)
-            for l in logits:
-                pred_labels.append([id2label[idx] for idx in l])
-        return pred_labels
