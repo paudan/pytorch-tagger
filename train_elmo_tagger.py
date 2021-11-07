@@ -9,13 +9,12 @@ import sys
 import argparse
 import pickle
 import torch
+from torch.utils.data import DataLoader
 from pytorch_tagger.trainers import ElmoModelTrainer
 from pytorch_tagger import ELMO_Attentive_CRF, ELMO_LSTM_CRF
 from pytorch_tagger.datasets import ElmoDataset, BertDataset
 from pytorch_tagger.utils import set_seed
 
-# OPTIONS_FILE = "https://s3-us-west-2.amazonaws.com/allennlp/models/elmo/2x2048_256_2048cnn_1xhighway/elmo_2x2048_256_2048cnn_1xhighway_options.json"
-# WEIGHTS_FILE = "https://s3-us-west-2.amazonaws.com/allennlp/models/elmo/2x2048_256_2048cnn_1xhighway/elmo_2x2048_256_2048cnn_1xhighway_weights.hdf5"
 OPTIONS_FILE = "elmo/elmo_2x2048_256_2048cnn_1xhighway_options.json"
 WEIGHTS_FILE = "elmo/elmo_2x2048_256_2048cnn_1xhighway_weights.hdf5"
 CACHE_DIR = 'embeddings'
@@ -83,7 +82,7 @@ if __name__ == '__main__':
     labels_map = BertDataset.labels_map(tags)
     train_dst = ElmoDataset(x_train, y_train, labels_map=labels_map, max_seq_length=args.max_seq_length)
     eval_dst = ElmoDataset(x_valid, y_valid, labels_map=labels_map, max_seq_length=args.max_seq_length)
-    eval_input_ids, _, eval_tokens, eval_labels = eval_dst.transform(x_valid, y_valid)
+    _, _, eval_tokens, eval_labels = eval_dst.transform(x_valid, y_valid)
     params = {
         'options_file': args.options_file,
         'weights_file': args.weights_file,
@@ -98,14 +97,14 @@ if __name__ == '__main__':
     else:
         raise Exception("Model type is not valid")
     trainer = ElmoModelTrainer(model, labels_map, use_gpu=args.use_gpu)
-    trainer.fit(train_dst, (eval_tokens, eval_labels, eval_input_ids),
+    trainer.fit(train_dst, eval_dst,
         epochs=args.num_epochs,
         output_dir=args.output_dir,
         warmup_steps=args.warmup_steps,
-        logging_steps=args.logging_steps,
         learning_rate=args.learning_rate,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         max_steps=args.max_steps,
         train_batch_size=args.train_batch_size
     )
-
+    dataloader = DataLoader(eval_dst, batch_size=32)
+    print(trainer.evaluate(dataloader, eval_tokens))
