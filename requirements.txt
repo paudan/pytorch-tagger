@@ -4,3 +4,4 @@ scikit-learn==0.24.2
 tensorboard>=1.15
 nltk==3.5
 allennlp>=2.1.0
+pytorch-lightning
