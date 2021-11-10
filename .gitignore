@@ -159,4 +159,5 @@ cython_debug/
 elmo/
 embeddings/
 runs/
+*-tagger*/
 
