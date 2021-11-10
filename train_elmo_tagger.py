@@ -10,7 +10,7 @@ import argparse
 import pickle
 import torch
 from torch.utils.data import DataLoader
-from pytorch_tagger.trainers import ElmoModelTrainer
+from pytorch_tagger.trainers import ModelTrainer
 from pytorch_tagger import ELMO_Attentive_CRF, ELMO_LSTM_CRF
 from pytorch_tagger.datasets import ElmoDataset, BertDataset
 from pytorch_tagger.utils import set_seed
@@ -46,6 +46,7 @@ if __name__ == '__main__':
     parser.add_argument("--logging-steps", default=500, type=int, help="Logging frequency")
     parser.add_argument("--use-bilstm", action='store_true', help="Indicates if bidirectional LSTM will be used as the intermediate layer")
     parser.add_argument("--rnn-dim", default=128, type=int, help="LSTM hidden layer dimension")
+    parser.add_argument("--early-stop", default=10, type=int, help="Stop after this number of epochs if no performance improvements are observed")
     parser.set_defaults(lower_case=True)
     parser.set_defaults(use_bilstm=False)
     args = parser.parse_args()
@@ -96,7 +97,7 @@ if __name__ == '__main__':
         model = ELMO_Attentive_CRF(**params)
     else:
         raise Exception("Model type is not valid")
-    trainer = ElmoModelTrainer(model, labels_map, use_gpu=args.use_gpu)
+    trainer = ModelTrainer(model, labels_map, use_gpu=args.use_gpu)
     trainer.fit(train_dst, eval_dst,
         epochs=args.num_epochs,
         output_dir=args.output_dir,
@@ -104,7 +105,12 @@ if __name__ == '__main__':
         learning_rate=args.learning_rate,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         max_steps=args.max_steps,
-        train_batch_size=args.train_batch_size
+        train_batch_size=args.train_batch_size,
+        early_stop=args.early_stop
     )
-    dataloader = DataLoader(eval_dst, batch_size=32)
-    print(trainer.evaluate(dataloader, eval_tokens))
+    model.save_model(args.output_dir)
+    # Load model
+    # device = 'cuda' if args.use_gpu is True and torch.cuda.is_available() else 'cpu'
+    # model = model.load_from_checkpoint(os.path.join(args.output_dir, 'model.pth'), **params, map_location=device)
+    dataloader = DataLoader(eval_dst, batch_size=args.eval_batch_size)
+    print(model.evaluate_dataloader(dataloader, eval_tokens))

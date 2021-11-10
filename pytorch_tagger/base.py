@@ -4,7 +4,12 @@ __author__ = "Paulius Danenas"
 __maintainer__ = "Paulius Danenas"
 __email__ = "danpaulius@gmail.com"
 
+import os
+import json
 from abc import abstractmethod
+import itertools
+from collections import namedtuple
+from tqdm import tqdm
 import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset
@@ -13,6 +18,7 @@ from pytorch_lightning import LightningModule
 from transformers import BertPreTrainedModel, AutoModel
 from allennlp.modules.conditional_random_field import ConditionalRandomField
 from allennlp.modules.token_embedders.elmo_token_embedder import ElmoTokenEmbedder
+from sklearn.metrics import precision_score, recall_score, f1_score
 
 module = __import__('transformers')
 
@@ -93,6 +99,25 @@ class _Base_CRF(LightningModule):
         self.mean_train_loss = 0
         self.mean_valid_loss = 0
 
+    @abstractmethod
+    def predict(self, data):
+        pass
+
+    def evaluate_dataloader(self, dataloader, all_tokens):
+        all_true, all_pred = list(), list()
+        for _, (input, orig_labels) in enumerate(tqdm(dataloader, desc="Batch")):
+            pred_labels = self.predict(input)
+            all_true.extend(list(itertools.chain(*orig_labels)))
+            all_pred.extend(list(itertools.chain(*pred_labels)))
+        all_true, all_pred = self.filter_predictions(all_true, all_pred, all_tokens)
+        Metrics = namedtuple('Metrics', ['precision', 'recall', 'fscore'])
+        return Metrics(precision=precision_score(all_true, all_pred, average='micro'),
+                       recall=recall_score(all_true, all_pred, average='micro'),
+                       fscore=f1_score(all_true, all_pred, average='micro'))
+
+    def filter_predictions(self, all_true, all_pred, all_tokens):
+        return all_true, all_pred
+
 
 class Base_BERT_CRF(BertPreTrainedModel, _Base_CRF, BaseRNNMixin):
 
@@ -122,11 +147,12 @@ class Base_BERT_CRF(BertPreTrainedModel, _Base_CRF, BaseRNNMixin):
         return loss
 
     def predict(self, input_ids, token_type_ids=None, input_mask=None):
-        outputs = self.bert(input_ids, token_type_ids=token_type_ids, attention_mask=input_mask)
-        outputs = outputs[0]
-        emissions = self.forward_hidden(outputs)
-        viterbi = self.crf.viterbi_tags(emissions, input_mask.byte())
-        return [entry[0] for entry in viterbi]
+        with torch.no_grad():
+            outputs = self.bert(input_ids, token_type_ids=token_type_ids, attention_mask=input_mask)
+            outputs = outputs[0]
+            emissions = self.forward_hidden(outputs)
+            viterbi = self.crf.viterbi_tags(emissions, input_mask.byte())
+            return [entry[0] for entry in viterbi]
 
     def predict_tags(self, input: TensorDataset):
         results = []
@@ -134,8 +160,7 @@ class Base_BERT_CRF(BertPreTrainedModel, _Base_CRF, BaseRNNMixin):
             input_ids = input_ids.unsqueeze(0)
             input_mask = input_mask.unsqueeze(0)
             segment_ids = segment_ids.unsqueeze(0)
-            with torch.no_grad():
-                logits = self.predict(input_ids, segment_ids, input_mask)
+            logits = self.predict(input_ids, segment_ids, input_mask)
             tags = [[self.labels_map[idx] for idx in l] for l in logits][0]
             results.append(tags[1:-1])  # Strip CLS/SEP symbols
         return results
@@ -153,13 +178,45 @@ class Base_BERT_CRF(BertPreTrainedModel, _Base_CRF, BaseRNNMixin):
         self.log_validation_metrics(loss, batch_idx)
         return loss
 
+    def save_model(self, output_dir):
+        if not os.path.isdir(output_dir):
+            os.mkdir(output_dir)
+        label2id = self.labels_map
+        id2label = {value:key for key,value in label2id.items()}
+        self.trainer.save_checkpoint(os.path.join(output_dir, 'model.pth'), weights_only=True)
+        self.tokenizer.save_pretrained(output_dir)
+        self.config.id2label = id2label
+        self.config.label2id = label2id
+        self.config.save_pretrained(output_dir)
+        with open('params.json', 'r') as f:
+            json.dump({'hidden_size': self.hidden_size, 'bidirectional': self.bidirectional}, f)
+        with open('labels_map.json', 'r') as f:
+            json.dump(self.labels_map, f)
+
+    def evaluate_dataloader(self, dataloader, all_tokens):
+        all_true, all_pred = list(), list()
+        for _, (input_ids, input_mask, token_type_ids, orig_labels) in enumerate(tqdm(dataloader, desc="Batch")):
+            pred_labels = self.predict(input_ids, token_type_ids, input_mask)
+            all_true.extend(list(itertools.chain(*orig_labels)))
+            all_pred.extend(list(itertools.chain(*pred_labels)))
+        all_true, all_pred = self.filter_predictions(all_true, all_pred, all_tokens)
+        Metrics = namedtuple('Metrics', ['precision', 'recall', 'fscore'])
+        return Metrics(precision=precision_score(all_true, all_pred, average='micro'),
+                       recall=recall_score(all_true, all_pred, average='micro'),
+                       fscore=f1_score(all_true, all_pred, average='micro'))
+
+    def filter_predictions(self, all_true, all_pred, all_tokens):
+        # Exclude BERT specific tags
+        skip_mask = list(map(lambda x: x not in [self.tokenizer.cls_token, self.tokenizer.sep_token], all_tokens))
+        all_true = list(itertools.compress(all_true, skip_mask))
+        all_pred = list(itertools.compress(all_pred, skip_mask))
+        return all_true, all_pred
+
 
 class Base_ELMO_CRF(_Base_CRF, BaseRNNMixin):
 
-    def __init__(self, options_file, weights_file, labels_map, hidden_size=128, dropout_prob=0.2, bidirectional=True):
+    def __init__(self, options_file=None, weights_file=None, labels_map=None, hidden_size=128, dropout_prob=0.2, bidirectional=True):
         super().__init__()
-        if labels_map is None:
-            raise ValueError('Labels map is not set')
         self.labels_map = labels_map
         self.num_labels = len(labels_map)
         self.bidirectional = bidirectional
@@ -208,4 +265,11 @@ class Base_ELMO_CRF(_Base_CRF, BaseRNNMixin):
         self.log_validation_metrics(loss, batch_idx)
         return loss
 
-
+    def save_model(self, output_dir):
+        if not os.path.isdir(output_dir):
+            os.mkdir(output_dir)
+        self.trainer.save_checkpoint(os.path.join(output_dir, 'model.pth'), weights_only=True)
+        with open('params.json', 'r') as f:
+            json.dump({'hidden_size': self.hidden_size, 'bidirectional': self.bidirectional}, f)
+        with open('labels_map.json', 'r') as f:
+            json.dump(self.labels_map, f)
