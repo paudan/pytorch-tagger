@@ -188,9 +188,9 @@ class Base_BERT_CRF(BertPreTrainedModel, _Base_CRF, BaseRNNMixin):
         self.config.id2label = id2label
         self.config.label2id = label2id
         self.config.save_pretrained(output_dir)
-        with open('params.json', 'r') as f:
+        with open(os.path.join(output_dir, 'params.json'), 'w') as f:
             json.dump({'hidden_size': self.hidden_size, 'bidirectional': self.bidirectional}, f)
-        with open('labels_map.json', 'r') as f:
+        with open(os.path.join(output_dir, 'labels_map.json'), 'w') as f:
             json.dump(self.labels_map, f)
 
     def evaluate_dataloader(self, dataloader, all_tokens):
@@ -269,7 +269,7 @@ class Base_ELMO_CRF(_Base_CRF, BaseRNNMixin):
         if not os.path.isdir(output_dir):
             os.mkdir(output_dir)
         self.trainer.save_checkpoint(os.path.join(output_dir, 'model.pth'), weights_only=True)
-        with open('params.json', 'r') as f:
+        with open(os.path.join(output_dir, 'params.json'), 'w') as f:
             json.dump({'hidden_size': self.hidden_size, 'bidirectional': self.bidirectional}, f)
-        with open('labels_map.json', 'r') as f:
+        with open(os.path.join(output_dir, 'labels_map.json'), 'w') as f:
             json.dump(self.labels_map, f)
