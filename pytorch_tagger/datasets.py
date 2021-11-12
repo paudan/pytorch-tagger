@@ -7,14 +7,26 @@ __email__ = "danpaulius@gmail.com"
 import itertools
 from collections import namedtuple
 import torch
-from torch.utils.data import TensorDataset, Dataset
+from torch.utils.data._utils.collate import default_collate
+from torch.utils.data import IterableDataset
 from allennlp.modules.elmo import batch_to_ids
 
 
-class BertDataset(object):
+def collate_eval_fn(batch):
+    return default_collate([i[0] for i in batch]), \
+           default_collate([i[1] for i in batch]), \
+           [i[2] for i in batch], [i[3] for i in batch]
 
-    def __init__(self, tokenizer):
+
+class BertDataset(IterableDataset):
+
+    def __init__(self, data, tokenizer, labels=None, labels_map=None, max_seq_length=256, return_inputs=False):
         self.tokenizer = tokenizer
+        self.data = data
+        self.labels = labels
+        self.labels_map = labels_map
+        self.max_seq_length = max_seq_length
+        self.return_inputs = return_inputs
 
     @staticmethod
     def tags_list(labels):
@@ -26,59 +38,58 @@ class BertDataset(object):
     def labels_map(tags):
         return {label : i for i, label in enumerate(sorted(tags))}
 
-    def process_example(self, example, labels_map=None, label=None, max_seq_length=256):
+    def process_example(self, example, label=None):
         InputFeatures = namedtuple('InputFeatures', ['input_ids', 'input_mask', 'segment_ids', 'label_id', 'tokens', 'labels'])
         example = list(example)
-        if len(example) >= max_seq_length - 1:
-            example = example[0:(max_seq_length - 2)]
+        if len(example) >= self.max_seq_length - 1:
+            example = example[0:(self.max_seq_length - 2)]
             if label is not None:
-                label = label[0:(max_seq_length - 2)]
+                label = label[0:(self.max_seq_length - 2)]
         tokens = [self.tokenizer.cls_token] + example + [self.tokenizer.sep_token]
         segment_ids = [0] * len(tokens)
         input_ids = self.tokenizer.convert_tokens_to_ids(tokens)
         input_mask = [1] * len(input_ids)
         if label is not None:
             orig_labels = [''] + label + ['']
-            label_ids = [labels_map["''"]] + [labels_map[l] for l in label] + [labels_map["''"]]
+            label_ids = [self.labels_map["''"]] + [self.labels_map[l] for l in label] + [self.labels_map["''"]]
         else:
             label_ids, orig_labels = None, None
-        while len(input_ids) < max_seq_length:
+        while len(input_ids) < self.max_seq_length:
             input_ids.append(0)
             input_mask.append(0)
             segment_ids.append(0)
             if label is not None:
                 label_ids.append(0)
+        input_ids = torch.tensor(input_ids, dtype=torch.long)
+        input_mask = torch.tensor(input_mask, dtype=torch.long)
+        segment_ids = torch.tensor(segment_ids, dtype=torch.long)
+        label_ids = torch.tensor(label_ids, dtype=torch.long)
         return InputFeatures(input_ids=input_ids, input_mask=input_mask, segment_ids=segment_ids,
                              label_id=label_ids, tokens=tokens, labels=orig_labels)
 
-    def transform(self, examples, labels, labels_map, max_seq_length=256):
-        if labels is None:
-            raise ValueError('labels cannot be None')
-        features = [self.process_example(example, labels_map, label, max_seq_length) for example, label in zip(examples, labels)]
-        all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
-        all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
-        all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
-        all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
-        examples = [f.tokens for f in features]
-        labels = [f.labels for f in features]
-        data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-        return data, examples, labels
+    def create_stream(self):
+        for example, label in zip(self.data, self.labels):
+            f = self.process_example(example, label)
+            if self.return_inputs:
+                yield (f.input_ids, f.input_mask, f.segment_ids), f.label_id, f.tokens, f.labels
+            else:
+                yield f.input_ids, f.input_mask, f.segment_ids, f.label_id
 
-    def transform_input(self, examples, max_seq_length=256):
-        features = [self.process_example(example, None, None, max_seq_length) for example in examples]
-        all_input_ids = torch.tensor([f.input_ids for f in features], dtype=torch.long)
-        all_input_mask = torch.tensor([f.input_mask for f in features], dtype=torch.long)
-        all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
-        return TensorDataset(all_input_ids, all_input_mask, all_segment_ids)
+    def __iter__(self):
+        return self.create_stream()
+
+    def __len__(self):
+        return len(self.data)
 
 
-class ElmoDataset(Dataset):
+class ElmoDataset(IterableDataset):
 
-    def __init__(self, data, labels=None, labels_map=None, max_seq_length=256):
+    def __init__(self, data, labels=None, labels_map=None, max_seq_length=256, return_inputs=False):
         self.data = data
         self.labels = labels
         self.labels_map = labels_map
         self.max_seq_length = max_seq_length
+        self.return_inputs = return_inputs
 
     def process_example(self, example, label=None, pad=True):
         InputFeatures = namedtuple('InputFeatures', ['input_ids', 'label_id', 'tokens', 'labels'])
@@ -105,19 +116,16 @@ class ElmoDataset(Dataset):
             reshaped, labels_reshaped = input_ids, label_ids
         return InputFeatures(input_ids=reshaped, label_id=labels_reshaped, tokens=example, labels=orig_labels)
 
+    def create_stream(self):
+        for example, label in zip(self.data, self.labels):
+            f = self.process_example(example, label)
+            if self.return_inputs:
+                yield f.input_ids, f.label_id, f.tokens, f.labels
+            else:
+                yield f.input_ids, f.label_id
+
+    def __iter__(self):
+        return self.create_stream()
+
     def __len__(self):
         return len(self.data)
-
-    def __getitem__(self, idx):
-        example = self.data[idx]
-        tags = self.labels[idx] if self.labels else None
-        f = self.process_example(example, tags)
-        return f.input_ids, f.label_id
-
-    def transform(self, examples, labels):
-        features = [self.process_example(example, label, pad=False) for example, label in zip(examples, labels)]
-        all_input_ids = [f.input_ids for f in features]
-        all_label_ids = [f.label_id for f in features]
-        examples = [f.tokens for f in features]
-        labels = [f.labels for f in features]
-        return all_input_ids, all_label_ids, examples, labels

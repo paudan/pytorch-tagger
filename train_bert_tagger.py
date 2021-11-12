@@ -12,7 +12,7 @@ import torch
 from torch.utils.data import DataLoader
 from pytorch_tagger import BERT_LSTM_CRF, BERT_Attentive_CRF
 from pytorch_tagger.trainers import ModelTrainer
-from pytorch_tagger.datasets import BertDataset
+from pytorch_tagger.datasets import BertDataset, collate_eval_fn
 from pytorch_tagger.utils import set_seed
 from transformers import AutoTokenizer, AutoConfig
 
@@ -81,9 +81,8 @@ if __name__ == '__main__':
     tags_test = BertDataset.tags_list(y_valid)
     tags = set.union(set(tags_train), set(tags_test))
     labels_map = BertDataset.labels_map(tags)
-    dst = BertDataset(tokenizer)
-    train_data, _, _ = dst.transform(x_train, y_train, labels_map=labels_map, max_seq_length=args.max_seq_length)
-    eval_data, eval_tokens, eval_labels = dst.transform(x_valid, y_valid, labels_map=labels_map, max_seq_length=args.max_seq_length)
+    train_data = BertDataset(x_train, tokenizer, y_train, labels_map=labels_map, max_seq_length=args.max_seq_length)
+    eval_data = BertDataset(x_valid, tokenizer, y_valid, labels_map=labels_map, max_seq_length=args.max_seq_length)
     config = AutoConfig.from_pretrained(args.model_name, cache_dir=CACHE_DIR)
     params = {
         'config': config,
@@ -113,6 +112,7 @@ if __name__ == '__main__':
     # Load model
     # device = 'cuda' if args.use_gpu is True and torch.cuda.is_available() else 'cpu'
     # model = model.load_from_checkpoint(os.path.join(args.output_dir, 'model.pth'), **params, map_location=device)
-    dataloader = DataLoader(eval_data, batch_size=args.eval_batch_size)
-    print(model.evaluate_dataloader(dataloader, eval_tokens))
+    eval_data = BertDataset(x_valid, tokenizer, y_valid, labels_map=labels_map, max_seq_length=args.max_seq_length, return_inputs=True)
+    dataloader = DataLoader(eval_data, batch_size=args.eval_batch_size, collate_fn=collate_eval_fn)
+    print(model.evaluate_dataloader(dataloader))
 

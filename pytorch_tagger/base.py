@@ -98,17 +98,21 @@ class _Base_CRF(LightningModule):
         self.total_valid_loss = 0
         self.mean_train_loss = 0
         self.mean_valid_loss = 0
+        if self.device.type =='cuda':
+            self.log('mem_allocated', round(torch.cuda.memory_allocated(0)/1024**3,1))
+            self.log('mem_cached', round(torch.cuda.memory_reserved(0)/1024**3,1))
 
     @abstractmethod
     def predict(self, data):
         pass
 
-    def evaluate_dataloader(self, dataloader, all_tokens):
-        all_true, all_pred = list(), list()
-        for _, (input, orig_labels) in enumerate(tqdm(dataloader, desc="Batch")):
+    def evaluate_dataloader(self, dataloader):
+        all_true, all_pred, all_tokens = list(), list(), list()
+        for input, orig_labels, _, tokens in tqdm(dataloader, desc="Batch"):
             pred_labels = self.predict(input)
             all_true.extend(list(itertools.chain(*orig_labels)))
             all_pred.extend(list(itertools.chain(*pred_labels)))
+            all_tokens.extend(tokens)
         all_true, all_pred = self.filter_predictions(all_true, all_pred, all_tokens)
         Metrics = namedtuple('Metrics', ['precision', 'recall', 'fscore'])
         return Metrics(precision=precision_score(all_true, all_pred, average='micro'),
@@ -140,15 +144,16 @@ class Base_BERT_CRF(BertPreTrainedModel, _Base_CRF, BaseRNNMixin):
         self.init_hidden()
 
     def forward(self, input_ids, tags, token_type_ids=None, input_mask=None):
-        outputs = self.bert(input_ids, token_type_ids=token_type_ids, attention_mask=input_mask)
+        outputs = self.bert(input_ids, attention_mask=input_mask, token_type_ids=token_type_ids)
         outputs = outputs[0]
         emissions = self.forward_hidden(outputs)
         loss = -1*self.crf(emissions, tags, mask=input_mask.byte())
         return loss
 
-    def predict(self, input_ids, token_type_ids=None, input_mask=None):
+    def predict(self, inputs):
+        input_ids, input_mask, token_type_ids = inputs
         with torch.no_grad():
-            outputs = self.bert(input_ids, token_type_ids=token_type_ids, attention_mask=input_mask)
+            outputs = self.bert(input_ids, attention_mask=input_mask, token_type_ids=token_type_ids)
             outputs = outputs[0]
             emissions = self.forward_hidden(outputs)
             viterbi = self.crf.viterbi_tags(emissions, input_mask.byte())
@@ -160,7 +165,7 @@ class Base_BERT_CRF(BertPreTrainedModel, _Base_CRF, BaseRNNMixin):
             input_ids = input_ids.unsqueeze(0)
             input_mask = input_mask.unsqueeze(0)
             segment_ids = segment_ids.unsqueeze(0)
-            logits = self.predict(input_ids, segment_ids, input_mask)
+            logits = self.predict((input_ids, segment_ids, input_mask))
             tags = [[self.labels_map[idx] for idx in l] for l in logits][0]
             results.append(tags[1:-1])  # Strip CLS/SEP symbols
         return results
@@ -193,18 +198,6 @@ class Base_BERT_CRF(BertPreTrainedModel, _Base_CRF, BaseRNNMixin):
         with open(os.path.join(output_dir, 'labels_map.json'), 'w') as f:
             json.dump(self.labels_map, f)
 
-    def evaluate_dataloader(self, dataloader, all_tokens):
-        all_true, all_pred = list(), list()
-        for _, (input_ids, input_mask, token_type_ids, orig_labels) in enumerate(tqdm(dataloader, desc="Batch")):
-            pred_labels = self.predict(input_ids, token_type_ids, input_mask)
-            all_true.extend(list(itertools.chain(*orig_labels)))
-            all_pred.extend(list(itertools.chain(*pred_labels)))
-        all_true, all_pred = self.filter_predictions(all_true, all_pred, all_tokens)
-        Metrics = namedtuple('Metrics', ['precision', 'recall', 'fscore'])
-        return Metrics(precision=precision_score(all_true, all_pred, average='micro'),
-                       recall=recall_score(all_true, all_pred, average='micro'),
-                       fscore=f1_score(all_true, all_pred, average='micro'))
-
     def filter_predictions(self, all_true, all_pred, all_tokens):
         # Exclude BERT specific tags
         skip_mask = list(map(lambda x: x not in [self.tokenizer.cls_token, self.tokenizer.sep_token], all_tokens))
@@ -231,9 +224,10 @@ class Base_ELMO_CRF(_Base_CRF, BaseRNNMixin):
         embed_input = self.embed(inputs)
         emissions = self.forward_hidden(embed_input)
         tags = torch.squeeze(tags, 2)
-        mask = torch.ones(*tags.size(), dtype=torch.bool).to(self.device)
+        mask = torch.ones(*tags.size(), dtype=torch.bool, device=self.device)
         mask[tags == -1] = 0
         loss = -1*self.crf(emissions, tags, mask)
+        del mask
         return loss
 
     def predict(self, inputs):
