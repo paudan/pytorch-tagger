@@ -38,9 +38,6 @@ class ModelTrainer:
         if device == 'cuda':
             logger.info(torch.cuda.get_device_name(0))
             logger.info('Available device count: {}'.format(torch.cuda.device_count()))
-            logger.info('Memory Usage:')
-            logger.info('Allocated: {} GB'.format(round(torch.cuda.memory_allocated(0)/1024**3,1)))
-            logger.info('Cached: {} GB'.format(round(torch.cuda.memory_reserved(0)/1024**3,1)))
 
     def init_dir(self, output_dir):
         if os.path.exists(output_dir):
@@ -56,6 +53,7 @@ class ModelTrainer:
         scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=max_steps)
         self.trainer = Trainer(
             logger=[CSVLogger(output_dir),TensorBoardLogger(output_dir)],
+            profiler=None,
             default_root_dir=output_dir,
             gpus=torch.cuda.device_count(),
             auto_lr_find=True,
