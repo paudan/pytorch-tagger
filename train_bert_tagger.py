@@ -11,7 +11,7 @@ import pickle
 import torch
 from torch.utils.data import DataLoader
 from pytorch_tagger import BERT_LSTM_CRF, BERT_Attentive_CRF
-from pytorch_tagger.trainers import ModelTrainer
+from pytorch_tagger.trainers import SimpleModelTrainer
 from pytorch_tagger.datasets import BertDataset, collate_eval_fn
 from pytorch_tagger.utils import set_seed
 from transformers import AutoTokenizer, AutoConfig
@@ -97,7 +97,7 @@ if __name__ == '__main__':
         model = BERT_Attentive_CRF(**params)
     else:
         raise Exception("Model type is not valid")
-    trainer = ModelTrainer(model, labels_map, use_gpu=args.use_gpu)
+    trainer = SimpleModelTrainer(model, labels_map, use_gpu=args.use_gpu)
     trainer.fit(train_data, eval_data,
         epochs=args.num_epochs,
         output_dir=args.output_dir,
@@ -111,7 +111,7 @@ if __name__ == '__main__':
     model.save_model(args.output_dir)
     # Load model
     # device = 'cuda' if args.use_gpu is True and torch.cuda.is_available() else 'cpu'
-    # model = model.load_from_checkpoint(os.path.join(args.output_dir, 'model.pth'), **params, map_location=device)
+    # model = SimpleModelTrainer.load_model(args.output_dir, model, torch.device(device))
     eval_data = BertDataset(x_valid, tokenizer, y_valid, labels_map=labels_map, max_seq_length=args.max_seq_length, return_inputs=True)
     dataloader = DataLoader(eval_data, batch_size=args.eval_batch_size, collate_fn=collate_eval_fn)
     print(model.evaluate_dataloader(dataloader))

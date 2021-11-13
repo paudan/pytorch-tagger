@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset
 from torch.nn.modules.transformer import MultiheadAttention
-from pytorch_lightning import LightningModule
+from pytorch_lightning import LightningModule, Trainer
 from transformers import BertPreTrainedModel, AutoModel
 from allennlp.modules.conditional_random_field import ConditionalRandomField
 from allennlp.modules.token_embedders.elmo_token_embedder import ElmoTokenEmbedder
@@ -143,15 +143,24 @@ class Base_BERT_CRF(BertPreTrainedModel, _Base_CRF, BaseRNNMixin):
         self.crf = ConditionalRandomField(self.num_labels)
         self.init_hidden()
 
-    def forward(self, input_ids, tags, token_type_ids=None, input_mask=None):
+    def forward(self, input, tags):
+        input_ids, input_mask, token_type_ids = input
         outputs = self.bert(input_ids, attention_mask=input_mask, token_type_ids=token_type_ids)
         outputs = outputs[0]
-        emissions = self.forward_hidden(outputs)
-        loss = -1*self.crf(emissions, tags, mask=input_mask.byte())
+        outputs = self.forward_hidden(outputs)
+        loss = -1*self.crf(outputs, tags, mask=input_mask.byte())
         return loss
+
+    def push_to_device(self,  batch):
+        (input_ids, input_mask, token_type_ids), label_ids = batch
+        return (input_ids.to(self.device), input_mask.to(self.device), token_type_ids.to(self.device)), \
+               label_ids.to(self.device)
 
     def predict(self, inputs):
         input_ids, input_mask, token_type_ids = inputs
+        input_ids = input_ids.to(self.device)
+        input_mask = input_mask.to(self.device)
+        token_type_ids = token_type_ids.to(self.device)
         with torch.no_grad():
             outputs = self.bert(input_ids, attention_mask=input_mask, token_type_ids=token_type_ids)
             outputs = outputs[0]
@@ -172,14 +181,14 @@ class Base_BERT_CRF(BertPreTrainedModel, _Base_CRF, BaseRNNMixin):
 
     def training_step(self, batch, batch_idx, **kwargs):
         input_ids, input_mask, token_type_ids, label_ids = tuple(batch)
-        loss = self.forward(input_ids, label_ids, token_type_ids, input_mask)
+        loss = self.forward((input_ids, input_mask, token_type_ids), label_ids)
         self.log_training_metrics(loss, batch_idx)
         return loss
 
     def validation_step(self, batch, batch_idx):
         input_ids, input_mask, token_type_ids, label_ids = tuple(batch)
         with torch.no_grad():
-            loss = self.forward(input_ids, label_ids, token_type_ids, input_mask)
+            loss = self.forward((input_ids, input_mask, token_type_ids), label_ids)
         self.log_validation_metrics(loss, batch_idx)
         return loss
 
@@ -188,7 +197,10 @@ class Base_BERT_CRF(BertPreTrainedModel, _Base_CRF, BaseRNNMixin):
             os.mkdir(output_dir)
         label2id = self.labels_map
         id2label = {value:key for key,value in label2id.items()}
-        self.trainer.save_checkpoint(os.path.join(output_dir, 'model.pth'), weights_only=True)
+        if hasattr(self, 'trainer') and isinstance(self.trainer, Trainer):
+            self.trainer.save_checkpoint(os.path.join(output_dir, 'model.pth'), weights_only=True)
+        else:
+            torch.save(self.state_dict(), os.path.join(output_dir, 'model.zip'))
         self.tokenizer.save_pretrained(output_dir)
         self.config.id2label = id2label
         self.config.label2id = label2id
@@ -221,18 +233,21 @@ class Base_ELMO_CRF(_Base_CRF, BaseRNNMixin):
         self.init_hidden()
 
     def forward(self, inputs, tags):
-        embed_input = self.embed(inputs)
-        emissions = self.forward_hidden(embed_input)
+        outputs = self.embed(inputs)
+        outputs = self.forward_hidden(outputs)
         tags = torch.squeeze(tags, 2)
         mask = torch.ones(*tags.size(), dtype=torch.bool, device=self.device)
         mask[tags == -1] = 0
-        loss = -1*self.crf(emissions, tags, mask)
+        loss = -1*self.crf(outputs, tags, mask)
         del mask
         return loss
 
+    def push_to_device(self,  batch):
+        return tuple(t.to(self.device) for t in batch)
+
     def predict(self, inputs):
         with torch.no_grad():
-            embed_input = self.embed(inputs)
+            embed_input = self.embed(inputs.to(self.device))
             emissions = self.forward_hidden(embed_input)
             viterbi = self.crf.viterbi_tags(emissions)
             return [entry[0] for entry in viterbi]
@@ -262,7 +277,10 @@ class Base_ELMO_CRF(_Base_CRF, BaseRNNMixin):
     def save_model(self, output_dir):
         if not os.path.isdir(output_dir):
             os.mkdir(output_dir)
-        self.trainer.save_checkpoint(os.path.join(output_dir, 'model.pth'), weights_only=True)
+        if hasattr(self, 'trainer') and isinstance(self.trainer, Trainer):
+            self.trainer.save_checkpoint(os.path.join(output_dir, 'model.pth'), weights_only=True)
+        else:
+            torch.save(self.state_dict(), os.path.join(output_dir, 'model.zip'))
         with open(os.path.join(output_dir, 'params.json'), 'w') as f:
             json.dump({'hidden_size': self.hidden_size, 'bidirectional': self.bidirectional}, f)
         with open(os.path.join(output_dir, 'labels_map.json'), 'w') as f:

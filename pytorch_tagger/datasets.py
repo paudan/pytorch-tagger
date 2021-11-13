@@ -73,7 +73,7 @@ class BertDataset(IterableDataset):
             if self.return_inputs:
                 yield (f.input_ids, f.input_mask, f.segment_ids), f.label_id, f.tokens, f.labels
             else:
-                yield f.input_ids, f.input_mask, f.segment_ids, f.label_id
+                yield (f.input_ids, f.input_mask, f.segment_ids), f.label_id
 
     def __iter__(self):
         return self.create_stream()
@@ -112,6 +112,7 @@ class ElmoDataset(IterableDataset):
             labels_reshaped = torch.zeros(self.max_seq_length, dtype=torch.long)
             labels_reshaped[:len(label_ids)] = torch.Tensor(label_ids)
             labels_reshaped = torch.unsqueeze(labels_reshaped, 1)
+            del input_ids, label_ids
         else:
             reshaped, labels_reshaped = input_ids, label_ids
         return InputFeatures(input_ids=reshaped, label_id=labels_reshaped, tokens=example, labels=orig_labels)
