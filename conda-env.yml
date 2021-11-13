@@ -1,13 +1,17 @@
 channels:
   - anaconda
+  - pytorch-lts
   - conda-forge
   - defaults
 dependencies:
-  - python=3.7
-  - cudnn=7.6
+  - python=3.8
+  - cudnn
+  - pytorch
+  - torchvision
+  - torchaudio
   - cudatoolkit=10.2
-  - scikit-learn=0.24
-  - pytorch-gpu
+  - scikit-learn
+  - pytorch-lightning
   - tensorboard
   - nltk
   - pip
@@ -15,4 +19,3 @@ dependencies:
     - transformers==4.3.3
     - allennlp-models==2.1.0
     - allennlp==2.1.0
-
