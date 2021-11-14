@@ -110,17 +110,18 @@ class SimpleModelTrainer:
         scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=max_steps)
         self.model.train()
         global_step = 0
-        tr_loss, current_loss = .0, .0
         best_loss = float('Inf')
         current_stop = 0
         with trange(epochs, desc="Epoch") as ebar:
             for ep in ebar:
                 self.model.train()
+                tr_loss, current_loss = .0, .0
                 with tqdm(train_dataloader, desc="Train") as bbar:
                     for step, batch in enumerate(bbar):
                         input_ids, label_ids = self.model.push_to_device(batch)
                         outputs = self.model(input_ids, label_ids)
                         mean_loss = (outputs + tr_loss) / (step+1)
+                        tr_loss += outputs.item()
                         mean_loss.backward()
                         bbar.set_postfix({'mean_loss': mean_loss.item()})
                         if (step + 1) % gradient_accumulation_steps == 0:
@@ -138,6 +139,7 @@ class SimpleModelTrainer:
                             input_ids, label_ids = self.model.push_to_device(batch)
                             outputs = self.model(input_ids, label_ids)
                             mean_loss = (outputs + tr_loss) / (step+1)
+                            tr_loss += outputs.item()
                             bbar.set_postfix({'mean_loss': mean_loss.item()})
                     if mean_loss < best_loss:
                         best_loss = mean_loss
