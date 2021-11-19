@@ -44,7 +44,8 @@ if __name__ == '__main__':
     parser.add_argument("--lower-case", action='store_true', help="Indicates if testing will be performed")
     parser.add_argument("--logging-steps", default=500, type=int, help="Logging frequency")
     parser.add_argument("--use-bilstm", action='store_true', help="Indicates if bidirectional LSTM will be used as the intermediate layer")
-    parser.add_argument("--rnn-dim", default=128, type=int, help="LSTM hidden layer dimension")
+    parser.add_argument("--rnn-dim", default=128, type=int, help="Hidden layer dimension")
+    parser.add_argument("--num_layers", default=2, type=int, help="Number of hidden LSTM layers")
     parser.add_argument("--early-stop", default=10, type=int, help="Stop after this number of epochs if no performance improvements are observed")
     parser.set_defaults(lower_case=True)
     parser.set_defaults(use_bilstm=True)
@@ -89,7 +90,8 @@ if __name__ == '__main__':
         'bidirectional': args.use_bilstm,
         'hidden_size': args.rnn_dim,
         'labels_map': labels_map,
-        'tokenizer': tokenizer
+        'tokenizer': tokenizer,
+        'num_layers': args.num_layers
     }
     if args.model_type == 'lstm':
         model = BERT_LSTM_CRF(**params)

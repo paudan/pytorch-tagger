@@ -11,7 +11,7 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 from torch.nn.modules.transformer import MultiheadAttention, TransformerEncoderLayer
-from pytorch_lightning import LightningModule, Trainer
+from pytorch_lightning import LightningModule
 from transformers import BertPreTrainedModel, AutoModel
 from allennlp.modules.conditional_random_field import ConditionalRandomField
 from allennlp.modules.token_embedders.elmo_token_embedder import ElmoTokenEmbedder
@@ -24,6 +24,7 @@ class BaseRNNMixin:
     hidden_size: int
     bidirectional: bool
     num_labels: int
+    num_layers: int
 
     @abstractmethod
     def init_hidden(self):
@@ -36,10 +37,10 @@ class BaseRNNMixin:
 
 class BaseLstmCRFMixin(BaseRNNMixin):
 
-    def init_hidden(self, num_layers=1):
+    def init_hidden(self):
         self.dropout = nn.Dropout(self.dropout_prob)
         out_dim = self.hidden_size
-        self.rnn = nn.LSTM(self.input_dim, self.hidden_size, num_layers=num_layers,
+        self.rnn = nn.LSTM(self.input_dim, self.hidden_size, num_layers=self.num_layers,
                            bidirectional=self.bidirectional, batch_first=True)
         if self.bidirectional:
             out_dim = self.hidden_size*2
@@ -54,10 +55,10 @@ class BaseLstmCRFMixin(BaseRNNMixin):
 
 class BaseAttentiveLstmMixin(BaseRNNMixin):
 
-    def init_hidden(self, num_layers=1):
+    def init_hidden(self):
         self.self_attention = MultiheadAttention(self.input_dim, num_heads=8)
         self.dropout = nn.Dropout(self.dropout_prob)
-        self.rnn = nn.LSTM(self.input_dim, self.hidden_size, num_layers=num_layers,
+        self.rnn = nn.LSTM(self.input_dim, self.hidden_size, num_layers=self.num_layers,
                            bidirectional=self.bidirectional, batch_first=True)
         out_dim = self.hidden_size
         if self.bidirectional:
@@ -75,12 +76,14 @@ class BaseAttentiveLstmMixin(BaseRNNMixin):
 class BaseTransformerMixin(BaseRNNMixin):
 
     def init_hidden(self):
-        self.transfomer = TransformerEncoderLayer(self.input_dim, 8)
-        self.dropout = nn.Dropout(self.dropout_prob)
+        layers = [TransformerEncoderLayer(self.input_dim, 8, dropout=self.dropout_prob)] * self.num_layers
+        self.transform_layers = nn.ModuleList(layers)
         self.hidden2tag = nn.Linear(self.input_dim, self.num_labels)
 
     def forward_hidden(self, embed_input):
-        output = self.transfomer(embed_input)
+        output = embed_input
+        for i in range(self.num_layers):
+            output = self.transform_layers[i](output)
         return self.hidden2tag(output)
 
 
@@ -135,7 +138,7 @@ class _Base_CRF(LightningModule):
 
 class Base_BERT_CRF(BertPreTrainedModel, _Base_CRF, BaseRNNMixin):
 
-    def __init__(self, config, tokenizer, labels_map=None, bidirectional=False, hidden_size=128):
+    def __init__(self, config, tokenizer, labels_map=None, bidirectional=False, hidden_size=128, num_layers=2):
         super(BertPreTrainedModel, self).__init__(config)
         self.labels_map = labels_map
         if labels_map is None:
@@ -143,6 +146,7 @@ class Base_BERT_CRF(BertPreTrainedModel, _Base_CRF, BaseRNNMixin):
             if labels_map is None:
                 raise ValueError('Labels map is not set')
         self.id2label = {value:key for key,value in self.labels_map.items()}
+        self.num_layers = num_layers
         self.hidden_size = hidden_size
         self.bidirectional = bidirectional
         self.num_labels = len(labels_map)
@@ -210,11 +214,13 @@ class Base_BERT_CRF(BertPreTrainedModel, _Base_CRF, BaseRNNMixin):
 
 class Base_ELMO_CRF(_Base_CRF, BaseRNNMixin):
 
-    def __init__(self, options_file=None, weights_file=None, labels_map=None, hidden_size=128, dropout_prob=0.2, bidirectional=True):
+    def __init__(self, options_file=None, weights_file=None, labels_map=None,
+                 hidden_size=128, dropout_prob=0.2, bidirectional=True, num_layers=2):
         super().__init__()
         self.labels_map = labels_map
         self.id2label = {value:key for key,value in self.labels_map.items()}
         self.num_labels = len(labels_map)
+        self.num_layers = num_layers
         self.bidirectional = bidirectional
         self.hidden_size = hidden_size
         self.dropout_prob = dropout_prob
