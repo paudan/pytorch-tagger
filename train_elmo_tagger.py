@@ -10,10 +10,10 @@ import argparse
 import pickle
 import torch
 from torch.utils.data import DataLoader
-from pytorch_tagger import ELMO_Attentive_CRF, ELMO_LSTM_CRF
+from pytorch_tagger import ELMO_Attentive_CRF, ELMO_LSTM_CRF, ELMO_Transformer_CRF
 from pytorch_tagger.datasets import ElmoDataset, BertDataset, collate_eval_fn
 from pytorch_tagger.trainers import SimpleModelTrainer
-from pytorch_tagger.utils import set_seed
+from pytorch_tagger.utils import set_seed, load_model, save_model
 
 OPTIONS_FILE = "elmo/elmo_2x2048_256_2048cnn_1xhighway_options.json"
 WEIGHTS_FILE = "elmo/elmo_2x2048_256_2048cnn_1xhighway_weights.hdf5"
@@ -22,7 +22,7 @@ CACHE_DIR = 'embeddings'
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-type", default='lstm', type=str, help="Model architecture", choices=['lstm', 'attention'])
+    parser.add_argument("--model-type", default='lstm', type=str, help="Model architecture", choices=['lstm', 'attention','transformer'])
     parser.add_argument("--options-file", default=OPTIONS_FILE, type=str, help="ELMO model options file")
     parser.add_argument("--weights-file", default=WEIGHTS_FILE, type=str, help="ELMO model weights file")
     parser.add_argument("--train-file", default=None, type=str, help="Training data file (Python pickle format)")
@@ -94,6 +94,8 @@ if __name__ == '__main__':
         model = ELMO_LSTM_CRF(**params)
     elif args.model_type == 'attention':
         model = ELMO_Attentive_CRF(**params)
+    elif args.model_type == 'transformer':
+        model = ELMO_Transformer_CRF(**params)
     else:
         raise Exception("Model type is not valid")
     trainer = SimpleModelTrainer(model, labels_map, use_gpu=args.use_gpu)
@@ -107,10 +109,11 @@ if __name__ == '__main__':
         train_batch_size=args.train_batch_size,
         early_stop=args.early_stop
     )
-    model.save_model(args.output_dir)
+    save_model(args.output_dir, model, save_state=True)
     # Load model
     # device = 'cuda' if args.use_gpu is True and torch.cuda.is_available() else 'cpu'
-    # model = SimpleModelTrainer.load_model(args.output_dir, model, torch.device(device))
+    # model = load_model(args.output_dir, torch.device(device))
     eval_dst = ElmoDataset(x_valid, y_valid, labels_map=labels_map, max_seq_length=args.max_seq_length, return_inputs=True)
     dataloader = DataLoader(eval_dst, batch_size=args.eval_batch_size, collate_fn=collate_eval_fn)
     print(model.evaluate_dataloader(dataloader))
+

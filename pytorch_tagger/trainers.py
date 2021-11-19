@@ -150,9 +150,4 @@ class SimpleModelTrainer:
                     break
         self.writer.close()
 
-    @staticmethod
-    def load_model(model_dir, model, device):
-        model.load_state_dict(torch.load(os.path.join(model_dir, 'model.zip')))
-        model.to(device)
-        return model
 

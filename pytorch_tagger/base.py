@@ -4,23 +4,18 @@ __author__ = "Paulius Danenas"
 __maintainer__ = "Paulius Danenas"
 __email__ = "danpaulius@gmail.com"
 
-import os
-import json
 from abc import abstractmethod
 import itertools
 from collections import namedtuple
 from tqdm import tqdm
 import torch
 import torch.nn as nn
-from torch.utils.data import TensorDataset
-from torch.nn.modules.transformer import MultiheadAttention
+from torch.nn.modules.transformer import MultiheadAttention, TransformerEncoderLayer
 from pytorch_lightning import LightningModule, Trainer
 from transformers import BertPreTrainedModel, AutoModel
 from allennlp.modules.conditional_random_field import ConditionalRandomField
 from allennlp.modules.token_embedders.elmo_token_embedder import ElmoTokenEmbedder
 from sklearn.metrics import precision_score, recall_score, f1_score
-
-module = __import__('transformers')
 
 
 class BaseRNNMixin:
@@ -41,10 +36,11 @@ class BaseRNNMixin:
 
 class BaseLstmCRFMixin(BaseRNNMixin):
 
-    def init_hidden(self):
+    def init_hidden(self, num_layers=1):
         self.dropout = nn.Dropout(self.dropout_prob)
         out_dim = self.hidden_size
-        self.rnn = nn.LSTM(self.input_dim, self.hidden_size, num_layers=1, bidirectional=self.bidirectional, batch_first=True)
+        self.rnn = nn.LSTM(self.input_dim, self.hidden_size, num_layers=num_layers,
+                           bidirectional=self.bidirectional, batch_first=True)
         if self.bidirectional:
             out_dim = self.hidden_size*2
         self.hidden2tag = nn.Linear(out_dim, self.num_labels)
@@ -56,21 +52,35 @@ class BaseLstmCRFMixin(BaseRNNMixin):
         return self.hidden2tag(sequence_output)
 
 
-class BaseAttentiveCRFMixin(BaseRNNMixin):
+class BaseAttentiveLstmMixin(BaseRNNMixin):
 
-    def init_hidden(self):
+    def init_hidden(self, num_layers=1):
+        self.self_attention = MultiheadAttention(self.input_dim, num_heads=8)
         self.dropout = nn.Dropout(self.dropout_prob)
+        self.rnn = nn.LSTM(self.input_dim, self.hidden_size, num_layers=num_layers,
+                           bidirectional=self.bidirectional, batch_first=True)
         out_dim = self.hidden_size
-        self.rnn = nn.LSTM(self.input_dim, self.hidden_size, num_layers=1, bidirectional=self.bidirectional, batch_first=True)
         if self.bidirectional:
             out_dim = self.hidden_size*2
-        self.self_attention = MultiheadAttention(out_dim, num_heads=8)
         self.hidden2tag = nn.Linear(out_dim, self.num_labels)
 
     def forward_hidden(self, embed_input):
+        output = embed_input
+        output, _ = self.self_attention(output, output, output)
         output = self.dropout(embed_input)
         output, _ = self.rnn(output)
-        output, _ = self.self_attention(output, output, output)
+        return self.hidden2tag(output)
+
+
+class BaseTransformerMixin(BaseRNNMixin):
+
+    def init_hidden(self):
+        self.transfomer = TransformerEncoderLayer(self.input_dim, 8)
+        self.dropout = nn.Dropout(self.dropout_prob)
+        self.hidden2tag = nn.Linear(self.input_dim, self.num_labels)
+
+    def forward_hidden(self, embed_input):
+        output = self.transfomer(embed_input)
         return self.hidden2tag(output)
 
 
@@ -132,6 +142,7 @@ class Base_BERT_CRF(BertPreTrainedModel, _Base_CRF, BaseRNNMixin):
             self.labels_map = config.id2label
             if labels_map is None:
                 raise ValueError('Labels map is not set')
+        self.id2label = {value:key for key,value in self.labels_map.items()}
         self.hidden_size = hidden_size
         self.bidirectional = bidirectional
         self.num_labels = len(labels_map)
@@ -168,14 +179,11 @@ class Base_BERT_CRF(BertPreTrainedModel, _Base_CRF, BaseRNNMixin):
             viterbi = self.crf.viterbi_tags(emissions, input_mask.byte())
             return [entry[0] for entry in viterbi]
 
-    def predict_tags(self, input: TensorDataset):
+    def predict_tags(self, inputs):
+        logits = self.predict(inputs)
         results = []
-        for _, (input_ids, input_mask, segment_ids) in enumerate(input):
-            input_ids = input_ids.unsqueeze(0)
-            input_mask = input_mask.unsqueeze(0)
-            segment_ids = segment_ids.unsqueeze(0)
-            logits = self.predict((input_ids, segment_ids, input_mask))
-            tags = [[self.labels_map[idx] for idx in l] for l in logits][0]
+        for l in logits:
+            tags = [self.id2label[idx] for idx in l]
             results.append(tags[1:-1])  # Strip CLS/SEP symbols
         return results
 
@@ -192,24 +200,6 @@ class Base_BERT_CRF(BertPreTrainedModel, _Base_CRF, BaseRNNMixin):
         self.log_validation_metrics(loss, batch_idx)
         return loss
 
-    def save_model(self, output_dir):
-        if not os.path.isdir(output_dir):
-            os.mkdir(output_dir)
-        label2id = self.labels_map
-        id2label = {value:key for key,value in label2id.items()}
-        if hasattr(self, 'trainer') and isinstance(self.trainer, Trainer):
-            self.trainer.save_checkpoint(os.path.join(output_dir, 'model.pth'), weights_only=True)
-        else:
-            torch.save(self.state_dict(), os.path.join(output_dir, 'model.zip'))
-        self.tokenizer.save_pretrained(output_dir)
-        self.config.id2label = id2label
-        self.config.label2id = label2id
-        self.config.save_pretrained(output_dir)
-        with open(os.path.join(output_dir, 'params.json'), 'w') as f:
-            json.dump({'hidden_size': self.hidden_size, 'bidirectional': self.bidirectional}, f)
-        with open(os.path.join(output_dir, 'labels_map.json'), 'w') as f:
-            json.dump(self.labels_map, f)
-
     def filter_predictions(self, all_true, all_pred, all_tokens):
         # Exclude BERT specific tags
         skip_mask = list(map(lambda x: x not in [self.tokenizer.cls_token, self.tokenizer.sep_token], all_tokens))
@@ -223,6 +213,7 @@ class Base_ELMO_CRF(_Base_CRF, BaseRNNMixin):
     def __init__(self, options_file=None, weights_file=None, labels_map=None, hidden_size=128, dropout_prob=0.2, bidirectional=True):
         super().__init__()
         self.labels_map = labels_map
+        self.id2label = {value:key for key,value in self.labels_map.items()}
         self.num_labels = len(labels_map)
         self.bidirectional = bidirectional
         self.hidden_size = hidden_size
@@ -252,14 +243,11 @@ class Base_ELMO_CRF(_Base_CRF, BaseRNNMixin):
             viterbi = self.crf.viterbi_tags(emissions)
             return [entry[0] for entry in viterbi]
 
-    def predict_tags(self, input: TensorDataset):
-        results = []
-        for _, input_ids in enumerate(input):
-            input_ids = input_ids.to(self.device)
-            logits = self.predict(input_ids)
-            tags = [[self.labels_map[idx] for idx in l] for l in logits][0]
-            results.append(tags)
-        return results
+    def predict_tags(self, input):
+        logits = self.predict(input.to(self.device))
+        if not hasattr(self, 'id2label'):
+            self.id2label = {value:key for key,value in self.labels_map.items()}
+        return [[self.id2label[idx] for idx in l] for l in logits]
 
     def training_step(self, batch, batch_idx, **kwargs):
         input_ids, label_ids = tuple(batch)
@@ -274,14 +262,3 @@ class Base_ELMO_CRF(_Base_CRF, BaseRNNMixin):
         self.log_validation_metrics(loss, batch_idx)
         return loss
 
-    def save_model(self, output_dir):
-        if not os.path.isdir(output_dir):
-            os.mkdir(output_dir)
-        if hasattr(self, 'trainer') and isinstance(self.trainer, Trainer):
-            self.trainer.save_checkpoint(os.path.join(output_dir, 'model.pth'), weights_only=True)
-        else:
-            torch.save(self.state_dict(), os.path.join(output_dir, 'model.zip'))
-        with open(os.path.join(output_dir, 'params.json'), 'w') as f:
-            json.dump({'hidden_size': self.hidden_size, 'bidirectional': self.bidirectional}, f)
-        with open(os.path.join(output_dir, 'labels_map.json'), 'w') as f:
-            json.dump(self.labels_map, f)
