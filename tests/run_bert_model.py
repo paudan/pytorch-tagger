@@ -6,7 +6,7 @@ from pytorch_tagger.datasets import BertDataset
 from pytorch_tagger.utils import load_model
 from transformers import AutoTokenizer
 
-model_dir = 'bert-pos-tagger-attention'
+model_dir = 'bert-pos-tagger-transformer'
 CACHE_DIR = 'embeddings'
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -21,4 +21,10 @@ val_dataloader = DataLoader(predict_dst, batch_size=len(examples))
 for step, batch in enumerate(val_dataloader):
     with torch.no_grad():
         print(model.predict_tags(batch))
+
+single_example = ['I', 'have', 'an', 'option', 'to', 'buy', 'more', 'stocks']
+embed = BertDataset.process_example(examples[0], labels_map, tokenizer)
+print(model.predict_tags((embed.input_ids.unsqueeze(0),
+                          embed.input_mask.unsqueeze(0),
+                          embed.segment_ids.unsqueeze(0))))
 
