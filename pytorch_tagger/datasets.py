@@ -30,8 +30,8 @@ class BertDataset(IterableDataset):
 
     @staticmethod
     def tags_list(labels):
-        label_list = set(list(itertools.chain(*labels)))
-        label_list.add("''")
+        label_list = list(set(itertools.chain(*labels)))
+        label_list.insert(0, "''")
         return label_list
 
     @staticmethod
